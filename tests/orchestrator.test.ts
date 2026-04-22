@@ -1,192 +1,152 @@
-import { describe, it, expect, vi, beforeEach, afterEach, Mock } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Orchestrator, AgentRole, OrchestratorConfig, OrchestrationResult, RoundResult } from '../src/orchestrator.js';
 
-// Mock child_process
-vi.mock('child_process', () => ({
-  spawn: vi.fn(),
-}));
-
-import { spawn } from 'child_process';
-
 describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
-  const mockSpawn = spawn as Mock;
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+  
+  // Helper to create a mock executor
+  function createMockExecutor(responses: string[], exitCode: number = 0) {
+    let callCount = 0;
+    return async () => {
+      const response = responses[callCount] || responses[responses.length - 1] || '';
+      callCount++;
+      return { stdout: response, stderr: '', exitCode };
+    };
+  }
 
   describe('AC-001: One question per round', () => {
     it('should send exactly one question to pi per round', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 5 });
+      const responses = ['Answer 1', 'Answer 2', 'Answer 3', 'Answer 4', 'Answer 5'];
+      const mockExecutor = createMockExecutor(responses);
       
-      // Track spawn calls
-      let spawnCallCount = 0;
-      const processResults: string[] = [];
-      
-      mockSpawn.mockImplementation((_cmd: string, _args: string[]) => {
-        spawnCallCount++;
-        return {
-          on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-            if (event === 'data') {
-              // Simulate pi response
-              setTimeout(() => cb(Buffer.from('Answer for round ' + spawnCallCount)), 5);
-            }
-          }),
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn() },
-        };
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 5, 
+        executePi: mockExecutor 
       });
-
-      await orchestrator.run('test feature context');
+      
+      const callCounts: number[] = [];
+      let currentCall = 0;
+      const trackingExecutor = async () => {
+        currentCall++;
+        callCounts.push(currentCall);
+        return mockExecutor();
+      };
+      
+      // Re-create with tracking executor
+      const trackedOrchestrator = new Orchestrator({ 
+        maxRounds: 5, 
+        executePi: trackingExecutor 
+      });
+      
+      const result = await trackedOrchestrator.run('test feature context');
       
       // AC-001: Exactly one question sent per round
-      // Since we have maxRounds=5, but mock doesn't return DONE,
-      // we should see 5 spawn calls for 5 rounds
-      expect(spawnCallCount).toBe(5);
+      expect(callCounts).toHaveLength(5);
     });
 
     it('should not batch questions - one at a time', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 3 });
+      const responses = ['Answer 1', 'Answer 2', 'Answer 3'];
+      let lastCallTime = 0;
+      const callOrder: number[] = [];
       
-      let activeProcess = false;
-      let processOrder: number[] = [];
-      let round = 0;
+      const mockExecutor = createMockExecutor(responses);
+      let callIdx = 0;
+      const sequentialExecutor = async () => {
+        callIdx++;
+        callOrder.push(callIdx);
+        // Simulate processing delay
+        await new Promise(resolve => setTimeout(resolve, 10));
+        return mockExecutor();
+      };
       
-      mockSpawn.mockImplementation(() => {
-        round++;
-        processOrder.push(round);
-        activeProcess = true;
-        return {
-          on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-            if (event === 'data') {
-              setTimeout(() => {
-                cb(Buffer.from('Answer ' + round));
-                activeProcess = false;
-              }, 20);
-            }
-          }),
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn() },
-        };
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3, 
+        executePi: sequentialExecutor 
       });
 
       await orchestrator.run('test feature context');
       
-      // Should process exactly 3 rounds
-      expect(processOrder).toHaveLength(3);
-      // Should process in sequence, not batched
-      expect(processOrder[0]).toBe(1);
-      expect(processOrder[1]).toBe(2);
-      expect(processOrder[2]).toBe(3);
+      // Should process exactly 3 rounds sequentially
+      expect(callOrder).toHaveLength(3);
+      expect(callOrder).toEqual([1, 2, 3]);
     });
 
     it('should capture exactly one answer per round', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 2 });
+      const responses = ['Answer for round 1', 'Answer for round 2'];
+      const mockExecutor = createMockExecutor(responses);
       
-      const answers: string[] = [];
-      
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            const answerText = 'Answer ' + (answers.length + 1);
-            setTimeout(() => cb(Buffer.from(answerText)), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 2, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('test context');
       
       // Each round should have exactly one answer
-      result.rounds.forEach((round, idx) => {
-        expect(round.answer).toBeDefined();
-        expect(round.question).toBeDefined();
-      });
-      
       expect(result.rounds).toHaveLength(2);
+      result.rounds.forEach((round, idx) => {
+        expect(round.round).toBe(idx + 1);
+        expect(round.answer).toBeDefined();
+      });
     });
   });
 
   describe('AC-002: Strict alternation between Interrogator and Respondee', () => {
     it('should enforce Interrogator then Respondee order', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 2 });
+      const responses = ['First answer', 'Second answer'];
+      const mockExecutor = createMockExecutor(responses);
       
-      const roles: AgentRole[] = [];
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 2, 
+        executePi: mockExecutor 
+      });
       
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            setTimeout(() => cb(Buffer.from('response')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      // Verify initial role is Interrogator
+      expect(orchestrator.getCurrentRole()).toBe(AgentRole.Interrogator);
+      
+      await orchestrator.run('test context');
+      
+      // After running, roles should have alternated
+      // Note: Since we use a mock that doesn't return DONE,
+      // it will run maxRounds times
+    });
+
+    it('should alternate roles for each round', async () => {
+      const responses = ['Answer 1', 'Answer 2', 'Answer 3', 'Answer 4'];
+      const mockExecutor = createMockExecutor(responses);
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 4, 
+        executePi: mockExecutor 
+      });
 
       await orchestrator.run('test context');
       
-      // After implementation, verify roles alternate properly
-      expect(orchestrator).toBeDefined();
-      expect(typeof orchestrator.run).toBe('function');
-    });
-
-    it('should alternate roles for each round - Interrogator sends question, Respondee answers', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 2 });
-      
-      const messages: { role: AgentRole; content: string }[] = [];
-      
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            setTimeout(() => cb(Buffer.from('Response')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
-
-      const result = await orchestrator.run('test context');
-      
-      expect(result.rounds).toHaveLength(2);
-      
-      // Round 1: Interrogator sends question
-      // Round 2: Respondee sends question (or Interrogator again after DONE from Respondee)
-      // The strict alternation means: Interrogator asks, Respondee answers, Interrogator asks...
+      // Verify the orchestrator ran the correct number of rounds
+      expect(orchestrator.getRoundCount()).toBe(4);
     });
 
     it('should switch to the other agent after one completes their turn', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 4 });
+      const responses = ['Answer 1', 'Answer 2'];
+      const mockExecutor = createMockExecutor(responses);
       
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            setTimeout(() => cb(Buffer.from('Answer')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 2, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('test context');
       
-      // After 4 rounds, should have completed or reached max
-      expect(result.rounds.length).toBeLessThanOrEqual(4);
-      expect(result.rounds.length).toBeGreaterThan(0);
+      expect(result.rounds.length).toBeLessThanOrEqual(2);
     });
 
     it('should not skip any agent in the alternation cycle', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 3 });
+      const responses = ['Answer 1', 'Answer 2', 'Answer 3'];
+      const mockExecutor = createMockExecutor(responses);
       
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            setTimeout(() => cb(Buffer.from('Answer')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('test context');
       
@@ -200,23 +160,22 @@ describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
   describe('AC-003: Graceful error handling on pi exit', () => {
     it('should log error and terminate gracefully when pi exits unexpectedly', async () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const orchestrator = new Orchestrator({ maxRounds: 3 });
       
-      // Simulate pi process error
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (err: Error) => void) => {
-          if (event === 'error') {
-            setTimeout(() => cb(new Error('pi process crashed')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      // Simulate pi crash (non-zero exit)
+      const mockExecutor = async () => {
+        return { stdout: '', stderr: 'pi crashed', exitCode: 1 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('test context');
       
       // AC-003: Should log error and return error in result
       expect(result.error).toBeDefined();
+      expect(result.error).toContain('code 1');
       expect(consoleSpy).toHaveBeenCalled();
       
       consoleSpy.mockRestore();
@@ -224,55 +183,55 @@ describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
 
     it('should handle non-zero exit code from pi process', async () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const orchestrator = new Orchestrator({ maxRounds: 3 });
       
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn(),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const mockExecutor = async () => {
+        return { stdout: '', stderr: 'Error: process failed', exitCode: 127 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('test context');
       
       // Should handle gracefully without throwing
       expect(result).toBeDefined();
+      expect(result.error).toBeDefined();
       
       consoleSpy.mockRestore();
     });
 
     it('should terminate gracefully without uncaught exceptions', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 2 });
-      
       // Simulate complete failure
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (err: Error) => void) => {
-          if (event === 'error') {
-            setTimeout(() => cb(new Error('ENOENT: pi not found')), 1);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const mockExecutor = async () => {
+        throw new Error('ENOENT: pi not found');
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 2, 
+        executePi: mockExecutor 
+      });
 
       // Should not throw
       await expect(orchestrator.run('test context')).resolves.toBeDefined();
+      
+      const result = await orchestrator.run('test context');
+      expect(result.error).toBeDefined();
     });
   });
 
   describe('Edge Cases', () => {
     it('should handle Interrogator returning DONE on first round (trivial spec)', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 10 });
-      
       // First response contains DONE signal
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            setTimeout(() => cb(Buffer.from('DONE - trivial feature, no questions needed')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const mockExecutor = async () => {
+        return { stdout: 'DONE - trivial feature, no questions needed', stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 10, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('trivial feature');
       
@@ -283,68 +242,59 @@ describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
     });
 
     it('should handle max rounds reached before Interrogator signals DONE', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 2 });
+      // No DONE signal, just keep returning answers
+      const mockExecutor = async () => {
+        return { stdout: 'Continuing interrogation...', stderr: '', exitCode: 0 };
+      };
       
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-          if (event === 'data') {
-            setTimeout(() => cb(Buffer.from('Continuing interrogation...')), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 2, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('complex feature requiring many rounds');
       
       // Should stop at max rounds
-      expect(result.rounds.length).toBeLessThanOrEqual(2);
+      expect(result.rounds.length).toBe(2);
       // Should indicate max rounds reached
       expect(result.error).toContain('Max rounds');
     });
 
     it('should handle pi process exits non-zero', async () => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      const orchestrator = new Orchestrator({ maxRounds: 3 });
       
-      let exitCode = 1;
-      mockSpawn.mockImplementation(() => ({
-        on: vi.fn((event: string, cb: (code: number) => void) => {
-          if (event === 'close') {
-            setTimeout(() => cb(exitCode), 5);
-          }
-        }),
-        stdout: { on: vi.fn() },
-        stderr: { on: vi.fn() },
-      }));
+      const mockExecutor = async () => {
+        return { stdout: '', stderr: 'Process error', exitCode: 1 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3, 
+        executePi: mockExecutor 
+      });
 
       const result = await orchestrator.run('test context');
       
       // Should handle non-zero exit gracefully
       expect(result.error).toBeDefined();
+      expect(result.error).toContain('code 1');
       expect(consoleSpy).toHaveBeenCalled();
       
       consoleSpy.mockRestore();
     });
 
     it('should handle normal completion with DONE signal', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 5 });
       let roundCount = 0;
-      
-      mockSpawn.mockImplementation(() => {
+      const mockExecutor = async () => {
         roundCount++;
-        return {
-          on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-            if (event === 'data') {
-              const response = roundCount === 3 
-                ? 'DONE - all questions answered' 
-                : 'Answer to question ' + roundCount;
-              setTimeout(() => cb(Buffer.from(response)), 5);
-            }
-          }),
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn() },
-        };
+        const response = roundCount === 3 
+          ? 'DONE - all questions answered' 
+          : `Answer to question ${roundCount}`;
+        return { stdout: response, stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 5, 
+        executePi: mockExecutor 
       });
 
       const result = await orchestrator.run('test feature');
@@ -354,79 +304,112 @@ describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
     });
 
     it('should preserve spec draft after DONE', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 5 });
       let roundCount = 0;
-      
-      mockSpawn.mockImplementation(() => {
+      const mockExecutor = async () => {
         roundCount++;
-        return {
-          on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-            if (event === 'data') {
-              const response = roundCount === 2 
-                ? 'DONE' 
-                : 'Spec content from round ' + roundCount;
-              setTimeout(() => cb(Buffer.from(response)), 5);
-            }
-          }),
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn() },
-        };
+        const response = roundCount === 2 
+          ? 'DONE' 
+          : `Spec content from round ${roundCount}`;
+        return { stdout: response, stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 5, 
+        executePi: mockExecutor 
       });
 
       const result = await orchestrator.run('test feature');
       
       expect(result.completed).toBe(true);
       expect(result.specDraft).toBeDefined();
+      expect(result.specDraft).toContain('Spec content from round 1');
     });
   });
 
   describe('Round Structure Validation', () => {
-    it('should have question in odd rounds (Interrogator)', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 4 });
-      let roundCount = 0;
+    it('should have question in each round', async () => {
+      const responses = ['Answer 1', 'Answer 2', 'Answer 3', 'Answer 4'];
+      const mockExecutor = createMockExecutor(responses);
       
-      mockSpawn.mockImplementation(() => {
-        roundCount++;
-        return {
-          on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-            if (event === 'data') {
-              setTimeout(() => cb(Buffer.from('Answer ' + roundCount)), 5);
-            }
-          }),
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn() },
-        };
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 4, 
+        executePi: mockExecutor 
       });
 
       const result = await orchestrator.run('test context');
       
-      // Odd rounds (1, 3) are Interrogator questions
-      expect(result.rounds[0]?.question).toBeDefined();
-      expect(result.rounds[2]?.question).toBeDefined();
+      // Verify each round has a question with the correct role
+      // Alternation: Interrogator -> Respondee -> Interrogator -> Respondee
+      // Odd rounds (1, 3, ...) are Interrogator, even rounds (2, 4, ...) are Respondee
+      result.rounds.forEach((round, idx) => {
+        expect(round.question).toBeDefined();
+        const expectedRole = idx % 2 === 0 ? AgentRole.Interrogator : AgentRole.Respondee;
+        expect(round.question).toContain(`[${expectedRole}]`);
+      });
     });
 
-    it('should have answer in even rounds (Respondee)', async () => {
-      const orchestrator = new Orchestrator({ maxRounds: 4 });
-      let roundCount = 0;
+    it('should accumulate answers into specDraft', async () => {
+      const responses = ['First answer content', 'Second answer content'];
+      const mockExecutor = createMockExecutor(responses);
       
-      mockSpawn.mockImplementation(() => {
-        roundCount++;
-        return {
-          on: vi.fn((event: string, cb: (data: Buffer) => void) => {
-            if (event === 'data') {
-              setTimeout(() => cb(Buffer.from('Answer ' + roundCount)), 5);
-            }
-          }),
-          stdout: { on: vi.fn() },
-          stderr: { on: vi.fn() },
-        };
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 2, 
+        executePi: mockExecutor 
       });
 
       const result = await orchestrator.run('test context');
       
-      // Even rounds (2, 4) are Respondee answers
-      expect(result.rounds[1]?.answer).toBeDefined();
-      expect(result.rounds[3]?.answer).toBeDefined();
+      expect(result.specDraft).toContain('First answer content');
+      expect(result.specDraft).toContain('Second answer content');
+    });
+  });
+
+  describe('Alternation Verification', () => {
+    it('should start with Interrogator role', () => {
+      const mockExecutor = createMockExecutor(['Answer']);
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 1, 
+        executePi: mockExecutor 
+      });
+      
+      expect(orchestrator.getCurrentRole()).toBe(AgentRole.Interrogator);
+    });
+
+    it('should track round count correctly', async () => {
+      const responses = ['A1', 'A2', 'A3'];
+      const mockExecutor = createMockExecutor(responses);
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3, 
+        executePi: mockExecutor 
+      });
+
+      await orchestrator.run('test');
+      
+      expect(orchestrator.getRoundCount()).toBe(3);
+    });
+
+    it('should properly terminate when DONE is received', async () => {
+      let callCount = 0;
+      const mockExecutor = async () => {
+        callCount++;
+        if (callCount === 1) {
+          return { stdout: 'Initial response', stderr: '', exitCode: 0 };
+        }
+        return { stdout: 'DONE', stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 5, 
+        executePi: mockExecutor 
+      });
+
+      const result = await orchestrator.run('test');
+      
+      // Should stop at round 2 (after first round got response and second got DONE)
+      expect(result.completed).toBe(true);
+      expect(result.rounds).toHaveLength(2);
+      expect(callCount).toBe(2);
     });
   });
 });
