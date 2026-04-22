@@ -137,6 +137,14 @@ export function synthesizeAnswer(draft: SpecDraft, answer: string): SpecDraft {
 }
 
 /**
+ * AC-005: Appends a Given/When/Then entry to the spec draft without overwriting existing entries.
+ * This is an alias for synthesizeAnswer to provide semantic clarity for append operations.
+ */
+export function appendToDraft(draft: SpecDraft, answer: string): SpecDraft {
+  return synthesizeAnswer(draft, answer);
+}
+
+/**
  * Creates a round result from synthesis operation
  */
 export function createRoundResult(

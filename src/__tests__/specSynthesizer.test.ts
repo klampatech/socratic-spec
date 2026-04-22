@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SpecDraft, GivenWhenThen, RoundResult } from '../types';
-import { createSpecDraft, synthesizeAnswer, appendToDraft } from '../specSynthesizer';
+import { createSpecDraft, synthesizeAnswer, appendToDraft, createRoundResult, isMalformedAnswer } from '../specSynthesizer';
 import * as loggerModule from '../logger';
 
 // Spy on logger for testing
@@ -98,8 +98,9 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
       const firstAnswer = 'When user clicks submit, then form data is validated.';
       const secondAnswer = 'Given validation passes, when data is complete, then it is saved to the database.';
       
-      const withFirstEntry = synthesizeAnswer(draft, firstAnswer);
-      const withSecondEntry = synthesizeAnswer(withFirstEntry, secondAnswer);
+      // Use appendToDraft directly
+      const withFirstEntry = appendToDraft(draft, firstAnswer);
+      const withSecondEntry = appendToDraft(withFirstEntry, secondAnswer);
       
       expect(withSecondEntry.entries).toHaveLength(2);
       expect(withSecondEntry.entries[0].when).toContain('user clicks submit');
@@ -118,7 +119,7 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
       
       let currentDraft = draft;
       for (const answer of answers) {
-        currentDraft = synthesizeAnswer(currentDraft, answer);
+        currentDraft = appendToDraft(currentDraft, answer);
       }
       
       expect(currentDraft.entries).toHaveLength(3);
@@ -131,14 +132,14 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
       const draft = createSpecDraft(featureId);
       const firstAnswer = 'When first action occurs, then first result occurs.';
       
-      const withFirst = synthesizeAnswer(draft, firstAnswer);
+      const withFirst = appendToDraft(draft, firstAnswer);
       expect(withFirst.lastUpdated).toBeGreaterThanOrEqual(draft.lastUpdated);
       
       // Small delay to ensure timestamp difference
       await new Promise(resolve => setTimeout(resolve, 10));
       
       const secondAnswer = 'When second action occurs, then second result occurs.';
-      const withSecond = synthesizeAnswer(withFirst, secondAnswer);
+      const withSecond = appendToDraft(withFirst, secondAnswer);
       
       expect(withSecond.lastUpdated).toBeGreaterThanOrEqual(withFirst.lastUpdated);
     });
@@ -232,6 +233,51 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
       expect(result.entries[0].given).toContain('authenticated');
       expect(result.entries[0].when).toContain('request data');
       expect(result.entries[0].then).toContain('returned');
+    });
+  });
+
+  describe('createRoundResult', () => {
+    it('should create successful round result with spec draft', () => {
+      const draft = createSpecDraft(featureId);
+      const updatedDraft = synthesizeAnswer(draft, 'When action occurs, then result follows.');
+      
+      const result = createRoundResult(updatedDraft, true);
+      
+      expect(result.specDraft).toBe(updatedDraft);
+      expect(result.success).toBe(true);
+      expect(result.error).toBeUndefined();
+      expect(result.incompleteReason).toBeUndefined();
+    });
+
+    it('should create failed round result with error message', () => {
+      const draft = createSpecDraft(featureId);
+      const errorMessage = 'Parsing failed';
+      
+      const result = createRoundResult(draft, false, errorMessage);
+      
+      expect(result.success).toBe(false);
+      expect(result.error).toBe(errorMessage);
+      expect(result.incompleteReason).toContain('Parsing failed');
+    });
+  });
+
+  describe('isMalformedAnswer', () => {
+    it('should return true for empty string', () => {
+      expect(isMalformedAnswer('')).toBe(true);
+    });
+
+    it('should return true for whitespace only', () => {
+      expect(isMalformedAnswer('   ')).toBe(true);
+      expect(isMalformedAnswer('\n\t')).toBe(true);
+    });
+
+    it('should return true for special characters only', () => {
+      expect(isMalformedAnswer('!!! ???')).toBe(true);
+      expect(isMalformedAnswer('###')).toBe(true);
+    });
+
+    it('should return false for valid answer', () => {
+      expect(isMalformedAnswer('When user clicks, then form submits.')).toBe(false);
     });
   });
 });
