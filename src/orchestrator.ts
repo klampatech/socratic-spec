@@ -3,6 +3,9 @@ import { spawn, ChildProcess } from 'child_process';
 export interface OrchestratorConfig {
   maxRounds: number;
   maxRetries?: number;
+  piArgs?: string[];
+  // For testing: provide a custom pi execution function
+  executePi?: (args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
 
 export interface RoundResult {
@@ -29,14 +32,55 @@ export interface AgentTurn {
   content: string;
 }
 
+// Default pi executor using child_process
+async function defaultPiExecutor(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return new Promise((resolve) => {
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+
+    const proc: ChildProcess = spawn('pi', args);
+
+    proc.stdout?.on('data', (data: Buffer) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr?.on('data', (data: Buffer) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', (code: number | null) => {
+      exitCode = code ?? 0;
+      resolve({ stdout, stderr, exitCode });
+    });
+
+    proc.on('error', (err: Error) => {
+      stderr += err.message;
+      exitCode = 1;
+      resolve({ stdout, stderr, exitCode });
+    });
+
+    // Timeout after 30 seconds
+    setTimeout(() => {
+      proc.kill();
+      resolve({ stdout, stderr, exitCode: 124 });
+    }, 30000);
+  });
+}
+
 export class Orchestrator {
   private maxRounds: number;
   private maxRetries: number;
+  private piArgs: string[];
+  private executePi: (args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   private currentRole: AgentRole = AgentRole.Interrogator;
+  private roundCount: number = 0;
 
   constructor(config: OrchestratorConfig) {
     this.maxRounds = config.maxRounds;
     this.maxRetries = config.maxRetries ?? 3;
+    this.piArgs = config.piArgs ?? ['chat'];
+    this.executePi = config.executePi ?? defaultPiExecutor;
   }
 
   /**
@@ -53,6 +97,7 @@ export class Orchestrator {
 
     try {
       for (let round = 1; round <= this.maxRounds; round++) {
+        this.roundCount = round;
         const roundResult = await this.executeRound(round, featureContext);
         rounds.push(roundResult);
 
@@ -63,10 +108,9 @@ export class Orchestrator {
           break;
         }
 
-        // Check if Interrogator signaled DONE (case-insensitive)
-        if (roundResult.question?.toUpperCase().includes('DONE')) {
-          completed = true;
-          break;
+        // Accumulate spec draft after each answer
+        if (roundResult.answer) {
+          specDraft += roundResult.answer + '\n';
         }
 
         // AC-002: Alternate roles for next round
@@ -74,9 +118,17 @@ export class Orchestrator {
           ? AgentRole.Respondee 
           : AgentRole.Interrogator;
 
-        // Accumulate spec draft after each answer
-        if (roundResult.answer) {
-          specDraft += roundResult.answer + '\n';
+        // AC-001/AC-002: Check if Interrogator signaled DONE (case-insensitive)
+        // DONE signal appears in the question from Interrogator
+        if (roundResult.question?.toUpperCase().includes('DONE')) {
+          completed = true;
+          break;
+        }
+
+        // Also check answer for DONE signal (in case Respondee reports Interrogator's decision)
+        if (roundResult.answer?.toUpperCase().includes('DONE')) {
+          completed = true;
+          break;
         }
       }
 
@@ -97,62 +149,42 @@ export class Orchestrator {
     // AC-002: Alternating roles enforced
     // AC-003: Graceful error handling
 
-    return new Promise((resolve) => {
-      let resolved = false;
+    const role = this.currentRole;
+    const question = `Round ${round} [${role}]: ${featureContext}`;
 
-      // AC-001: Send exactly one question to pi per round
-      const question = `Question ${round}: ${featureContext}`;
+    try {
+      const response = await this.executePi(this.piArgs);
+      const { stdout, stderr, exitCode } = response;
+
+      // AC-003: Handle non-zero exit code
+      if (exitCode !== 0) {
+        console.error(`pi process exited with code ${exitCode} during round ${round}`);
+        return {
+          round,
+          question,
+          error: `pi process exited with code ${exitCode}: ${stderr || stdout}`,
+        };
+      }
+
+      const responseText = stdout.trim();
       
-      // Mock the pi process interaction for now
-      // In production, this would spawn the pi CLI
-      const mockResponse = this.getMockResponse(round);
+      // Check for DONE signal in output
+      const isDone = responseText.toUpperCase().includes('DONE');
       
-      setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          resolve({ round, question, answer: mockResponse });
-        }
-      }, 10);
-    });
-  }
-
-  /**
-   * Gets mock response for testing - in production this connects to pi CLI
-   */
-  private getMockResponse(round: number): string {
-    return `Answer from ${this.currentRole} for round ${round}`;
-  }
-
-  /**
-   * Execute actual pi process - to be used in production
-   */
-  private executePiProcess(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-    return new Promise((resolve) => {
-      let stdout = '';
-      let stderr = '';
-      let exitCode = 0;
-
-      const proc: ChildProcess = spawn('pi', args);
-
-      proc.stdout?.on('data', (data: Buffer) => {
-        stdout += data.toString();
-      });
-
-      proc.stderr?.on('data', (data: Buffer) => {
-        stderr += data.toString();
-      });
-
-      proc.on('close', (code: number | null) => {
-        exitCode = code ?? 0;
-        resolve({ stdout, stderr, exitCode });
-      });
-
-      proc.on('error', (err: Error) => {
-        stderr += err.message;
-        exitCode = 1;
-        resolve({ stdout, stderr, exitCode });
-      });
-    });
+      return {
+        round,
+        question: isDone ? `DONE: ${responseText}` : question,
+        answer: responseText,
+      };
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      console.error(`Round ${round} execution error: ${errMsg}`);
+      return {
+        round,
+        question,
+        error: `Failed to execute round: ${errMsg}`,
+      };
+    }
   }
 
   /**
@@ -161,5 +193,19 @@ export class Orchestrator {
    */
   private handleProcessExit(exitCode: number, round: number): void {
     console.error(`pi process exited with code ${exitCode} during round ${round}`);
+  }
+
+  /**
+   * Get the current role (for testing)
+   */
+  getCurrentRole(): AgentRole {
+    return this.currentRole;
+  }
+
+  /**
+   * Get the current round number (for testing)
+   */
+  getRoundCount(): number {
+    return this.roundCount;
   }
 }
