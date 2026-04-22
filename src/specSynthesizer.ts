@@ -28,14 +28,14 @@ function parseGivenWhenThen(answer: string): { given: string; when: string; then
   let when = '';
   let then = '';
 
-  // Extract "Given" clause - more greedy matching
-  const givenMatch = normalized.match(/given\s+(?:that\s+)?(.+?)(?=\s*,?\s*(?:when|then)|\s*$)/i);
+  // Extract "Given" clause - use a pattern that captures until we hit when/then
+  const givenMatch = normalized.match(/given\s+(?:that\s+)?([^,]+)/i);
   if (givenMatch) {
     given = givenMatch[1].trim();
   }
 
-  // Extract "When" clause - more greedy matching
-  const whenMatch = normalized.match(/when\s+(?:that\s+)?(.+?)(?=\s*,?\s*(?:then)|\s*$)/i);
+  // Extract "When" clause - capture until then or end
+  const whenMatch = normalized.match(/when\s+(?:that\s+)?([^,]+)/i);
   if (whenMatch) {
     when = whenMatch[1].trim();
   }
@@ -43,19 +43,19 @@ function parseGivenWhenThen(answer: string): { given: string; when: string; then
   // If no explicit When found, look for other connectors
   if (!when) {
     // Try "upon" pattern
-    const uponMatch = normalized.match(/upon\s+(.+?)(?=\s*,?\s*(?:then)|\s*$)/i);
+    const uponMatch = normalized.match(/upon\s+([^,]+)/i);
     if (uponMatch) {
       when = 'Upon ' + uponMatch[1].trim();
     }
     // Try "if" pattern
-    const ifMatch = normalized.match(/if\s+(.+?)(?=\s*,?\s*(?:then)|\s*$)/i);
+    const ifMatch = normalized.match(/if\s+([^,]+)/i);
     if (ifMatch && !when) {
       when = 'If ' + ifMatch[1].trim();
     }
   }
 
-  // Extract "Then" clause - more greedy matching
-  const thenMatch = normalized.match(/then\s+(?:that\s+)?(.+?)(?=\s*,?\s*(?:given|when)|\s*$)/i);
+  // Extract "Then" clause - capture rest after then
+  const thenMatch = normalized.match(/then\s+(?:that\s+)?(.+)/i);
   if (thenMatch) {
     then = thenMatch[1].trim();
   }

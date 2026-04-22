@@ -103,7 +103,8 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
       
       expect(withSecondEntry.entries).toHaveLength(2);
       expect(withSecondEntry.entries[0].when).toContain('user clicks submit');
-      expect(withSecondEntry.entries[1].when).toContain('validation passes');
+      expect(withSecondEntry.entries[1].given).toContain('validation passes');
+      expect(withSecondEntry.entries[1].when).toContain('data is complete');
       expect(withSecondEntry.entries[0].then).toContain('validated');
     });
 
@@ -123,7 +124,7 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
       expect(currentDraft.entries).toHaveLength(3);
       expect(currentDraft.entries[0].when).toContain('settings');
       expect(currentDraft.entries[1].when).toContain('email');
-      expect(currentDraft.entries[2].when).toContain('request password reset');
+      expect(currentDraft.entries[2].given).toContain('request password reset');
     });
 
     it('should update lastUpdated timestamp on each append', async () => {
