@@ -630,7 +630,7 @@ function calculateSemanticSimilarity(
 
 /**
  * Calculates similarity specifically for rephrasing detection.
- * Uses multiple approaches for semantic equivalence detection.
+ * Uses weighted Jaccard and n-gram similarity for semantic equivalence detection.
  */
 function calculateRephrasingSimilarity(
   given1: string, when1: string, then1: string,
@@ -640,30 +640,31 @@ function calculateRephrasingSimilarity(
   const g1 = given1 === '(none)' ? '' : given1;
   const g2 = given2 === '(none)' ? '' : given2;
   
-  // Calculate similarities for each clause
+  // Calculate Jaccard similarity for each clause
   const givenSim = calculateJaccardSimilarity(g1, g2);
   const whenSim = calculateJaccardSimilarity(when1, when2);
   const thenSim = calculateJaccardSimilarity(then1, then2);
   
   // Handle empty GIVEN cases - when both have no GIVEN, don't penalize
-  let givenWeight = 0.2;
-  let whenWeight = 0.4;
-  let thenWeight = 0.4;
+  let givenWeight = 0.15;
+  let whenWeight = 0.45;
+  let thenWeight = 0.40;
   let effectiveGivenSim = givenSim;
   
   if (!g1 && !g2) {
     // Both empty - ignore given similarity and redistribute weight
-    whenWeight = 0.5;
-    thenWeight = 0.5;
+    whenWeight = 0.55;
+    thenWeight = 0.45;
     effectiveGivenSim = 1.0; // Treat as match
   } else if (!g1 || !g2) {
     // One has given, one doesn't - reduce weight
     givenWeight = 0.1;
-    whenWeight = 0.45;
-    thenWeight = 0.45;
+    whenWeight = 0.5;
+    thenWeight = 0.4;
+    effectiveGivenSim = 0.5; // Penalize
   }
   
-  // Calculate weighted average
+  // Calculate weighted average of Jaccard similarities
   const jaccardResult = effectiveGivenSim * givenWeight + whenSim * whenWeight + thenSim * thenWeight;
   
   // Also calculate character n-gram similarity as a fallback for semantic equivalence
@@ -673,7 +674,9 @@ function calculateRephrasingSimilarity(
   const overallNgramSim = (whenNgramSim + thenNgramSim) / 2;
   
   // Combine both approaches - take the higher of the two
-  return Math.max(jaccardResult, overallNgramSim * 0.7);
+  // N-gram helps catch structural similarity even when vocabulary differs
+  // Cap at 1.0 to ensure valid similarity range
+  return Math.min(Math.max(jaccardResult, overallNgramSim * 0.85), 1.0);
 }
 
 /**
