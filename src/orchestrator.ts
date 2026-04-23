@@ -1,6 +1,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import { Interrogator, createInterrogator, DONE_SIGNAL } from './interrogator';
-import { createSpecDraft } from './specSynthesizer';
+import { createSpecDraft, isMalformedAnswer } from './specSynthesizer';
+import { log, error } from './logger';
 
 export interface OrchestratorConfig {
   maxRounds: number;
@@ -17,6 +18,9 @@ export interface RoundResult {
   answer?: string;
   error?: string;
   isDone?: boolean;
+  // FEAT-002/edge-003: Mark round as incomplete for malformed answers
+  incomplete?: boolean;
+  incompleteReason?: string;
 }
 
 export interface OrchestrationResult {
@@ -94,6 +98,8 @@ export class Orchestrator {
       similarityThreshold: 0.7
     });
     this.specDraft = createSpecDraft('default');
+    this.currentRole = AgentRole.Interrogator;
+    this.roundCount = 0;
   }
 
   /**
@@ -101,6 +107,7 @@ export class Orchestrator {
    * AC-001: Exactly one question sent per round
    * AC-002: Strict alternation between Interrogator and Respondee
    * AC-003: Graceful error handling on pi exit
+   * FEAT-002/edge-003: Handle malformed/unparseable answers
    */
   async run(featureContext: string): Promise<OrchestrationResult> {
     const rounds: RoundResult[] = [];
@@ -108,12 +115,16 @@ export class Orchestrator {
     let completed = false;
     let error: string | undefined;
 
+    // Reset state for each run
+    this.currentRole = AgentRole.Interrogator;
+    this.roundCount = 0;
+
     // Try to execute at least one round even for trivial specs
     // The DONE signal will be checked from the pi response
     try {
       for (let round = 1; round <= this.maxRounds; round++) {
         this.roundCount = round;
-        const roundResult = await this.executeRound(round, featureContext);
+        const roundResult = await this.executeRoundWithRetry(round, featureContext);
         rounds.push(roundResult);
 
         if (roundResult.error) {
@@ -124,15 +135,24 @@ export class Orchestrator {
         }
 
         // Accumulate spec draft after each answer
+        // FEAT-002/edge-003: Mark malformed answers in spec draft with (unparseable) marker
         if (roundResult.answer) {
-          specDraftText += roundResult.answer + '\n';
+          if (roundResult.incomplete) {
+            // Malformed answer - mark with unparseable indicator
+            specDraftText += `(unparseable) ${roundResult.answer}\n`;
+          } else {
+            specDraftText += roundResult.answer + '\n';
+          }
+        } else if (roundResult.incomplete) {
+          // Incomplete round with no answer - add unparseable marker
+          specDraftText += '(unparseable)\n';
         }
 
         // AC-002: Alternate roles for next round
         this.currentRole = this.currentRole === AgentRole.Interrogator 
           ? AgentRole.Respondee 
           : AgentRole.Interrogator;
-
+        
         // Check for DONE signal from round execution
         if (roundResult.isDone) {
           completed = true;
@@ -150,6 +170,107 @@ export class Orchestrator {
     }
 
     return { rounds, specDraft: specDraftText, completed, error };
+  }
+
+  /**
+   * Execute a round with retry logic for malformed answers
+   * FEAT-002/edge-003: Retry malformed answers up to maxRetries times
+   * Note: maxRetries=1 means 1 initial + 1 retry = 2 total attempts
+   */
+  private async executeRoundWithRetry(round: number, featureContext: string): Promise<RoundResult> {
+    let attempt = 0;
+    let malformedReason: string | undefined;
+    let lastAnswer: string | undefined;
+
+    while (true) {
+      attempt++;
+      const result = await this.executeRound(round, featureContext);
+
+      // Check for execution errors first - don't retry those
+      if (result.error) {
+        return result;
+      }
+
+      // Track last answer for incomplete return
+      if (result.answer) {
+        lastAnswer = result.answer;
+      }
+
+      // AC-006: Handle malformed answers with error logging
+      const malformedCheck = this.checkMalformedAnswer(result.answer, result.isDone ?? false);
+      
+      if (malformedCheck.isMalformed) {
+        malformedReason = malformedCheck.reason;
+        // AC-006: Log error for malformed answer
+        const errorMsg = `malformed answer detected${malformedCheck.reason ? ': ' + malformedCheck.reason : ''}`;
+        console.error(`${errorMsg} in round ${round}, attempt ${attempt}`);
+        
+        // maxRetries is the total number of retries allowed after the initial attempt
+        // So with maxRetries=1: attempt 1 (initial) + attempt 2 (retry 1) = 2 total
+        // We check if attempt > maxRetries
+        if (attempt > this.maxRetries) {
+          // Max retries exceeded - mark round as incomplete with the reason
+          return {
+            ...result,
+            incomplete: true,
+            incompleteReason: malformedReason 
+              ? `malformed answer: ${malformedReason} (max retries ${this.maxRetries} exceeded)`
+              : `malformed answer: max retries (${this.maxRetries}) exceeded`,
+            answer: lastAnswer
+          };
+        }
+        // Continue to retry
+        continue;
+      }
+
+      // Good answer or done - return success
+      return result;
+    }
+  }
+
+  /**
+   * Check if an answer is malformed and return details
+   * FEAT-002/edge-003: Detect unparseable content
+   * NOTE: DONE signals with empty content after prefix stripping are NOT malformed
+   */
+  private checkMalformedAnswer(answer: string | undefined, isDone: boolean = false): { isMalformed: boolean; reason?: string } {
+    // If DONE signal (even with empty content), it's valid
+    if (isDone) {
+      return { isMalformed: false };
+    }
+    
+    // Handle undefined/empty answers
+    if (!answer || answer.trim() === '') {
+      return { isMalformed: true, reason: 'empty answer' };
+    }
+    
+    const trimmed = answer.trim();
+    
+    // Check for empty/whitespace only
+    if (!trimmed) {
+      return { isMalformed: true, reason: 'whitespace only' };
+    }
+    
+    // Check for special character only content
+    if (/^[\s!?.,#@$%^&*()_+\-=\[\]{}|;:'"<>\\/\\`~]+$/.test(trimmed)) {
+      return { isMalformed: true, reason: 'special characters only' };
+    }
+    
+    // Check if the GWT parser would mark it as unparseable
+    if (isMalformedAnswer(trimmed)) {
+      return { isMalformed: true, reason: 'unparseable structure' };
+    }
+    
+    // Check for binary/garbage content (high ratio of non-printable chars)
+    if (trimmed.length > 10) {
+      const nonPrintableCount = (trimmed.match(/[^\x20-\x7E\n\t\r\s]/g) || []).length;
+      const nonPrintableRatio = nonPrintableCount / trimmed.length;
+      if (nonPrintableRatio > 0.3) {
+        return { isMalformed: true, reason: 'binary/garbage content' };
+      }
+    }
+    
+    return { isMalformed: false };
   }
 
   private async executeRound(round: number, featureContext: string): Promise<RoundResult> {
