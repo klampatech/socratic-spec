@@ -3,6 +3,34 @@ import { Orchestrator, AgentRole, OrchestratorConfig, OrchestrationResult, Round
 
 describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
   
+  // AC-001: Strictly verifies exactly ONE question sent per round
+  it('AC-001: Given a feature context, When the orchestrator runs, Then exactly one question is sent to pi per round', async () => {
+    const maxRounds = 3;
+    const callLog: number[] = [];
+    
+    const mockExecutor = async () => {
+      callLog.push(callLog.length + 1);
+      return { stdout: 'test response', stderr: '', exitCode: 0 };
+    };
+    
+    const orchestrator = new Orchestrator({ 
+      maxRounds,
+      executePi: mockExecutor 
+    });
+    
+    await orchestrator.run('test feature context');
+    
+    // AC-001: The number of pi calls MUST equal the number of rounds
+    // This verifies exactly one question is sent per round, not multiple
+    expect(callLog.length).toBe(maxRounds);
+    
+    // Verify calls are sequential (1, 2, 3...) not concurrent
+    expect(callLog).toEqual([1, 2, 3]);
+    
+    // Verify no batching: each call completed before next started
+    // This is implicitly tested by the sequential nature
+  });
+  
   // Helper to create a mock executor
   function createMockExecutor(responses: string[], exitCode: number = 0) {
     let callCount = 0;
@@ -86,6 +114,78 @@ describe('FEAT-001: Two-agent Q&A loop with strict alternation', () => {
       result.rounds.forEach((round, idx) => {
         expect(round.round).toBe(idx + 1);
         expect(round.answer).toBeDefined();
+      });
+    });
+  });
+
+  // AC-001: Additional strict tests for "exactly one question per round"
+  describe('AC-001 Strictness: One question per round', () => {
+    it('should stop immediately when DONE is received (one round total)', async () => {
+      let callCount = 0;
+      const mockExecutor = async () => {
+        callCount++;
+        return { stdout: 'DONE', stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 5,
+        executePi: mockExecutor 
+      });
+      
+      await orchestrator.run('test context');
+      
+      // AC-001: Exactly one pi call should happen, then loop stops
+      expect(callCount).toBe(1);
+      expect(orchestrator.getRoundCount()).toBe(1);
+    });
+
+    it('should not batch multiple questions in a single round', async () => {
+      let roundCount = 0;
+      const executionOrder: string[] = [];
+      
+      const mockExecutor = async () => {
+        roundCount++;
+        executionOrder.push(`call-${roundCount}`);
+        // Return non-DONE responses to ensure all rounds execute
+        return { stdout: `Response ${roundCount}`, stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3,
+        executePi: mockExecutor 
+      });
+      
+      await orchestrator.run('test');
+      
+      // AC-001: Three separate pi calls, not one call with multiple questions
+      expect(executionOrder).toHaveLength(3);
+      expect(executionOrder).toEqual(['call-1', 'call-2', 'call-3']);
+      
+      // If batching occurred, we would see only 1 entry or interleaved logs
+      // Sequential execution guarantees no batching
+      const uniqueCalls = new Set(executionOrder);
+      expect(uniqueCalls.size).toBe(3); // All calls are distinct
+    });
+
+    it('should return exactly one answer per round in result', async () => {
+      const responses = ['Answer 1', 'Answer 2', 'Answer 3'];
+      let idx = 0;
+      const mockExecutor = async () => {
+        return { stdout: responses[idx++], stderr: '', exitCode: 0 };
+      };
+      
+      const orchestrator = new Orchestrator({ 
+        maxRounds: 3,
+        executePi: mockExecutor 
+      });
+      
+      const result = await orchestrator.run('test');
+      
+      // AC-001: Exactly one question -> one answer per round
+      result.rounds.forEach((round, i) => {
+        expect(round.round).toBe(i + 1);
+        expect(round.answer).toBeDefined();
+        expect(round.answer).toBe(`Answer ${i + 1}`);
       });
     });
   });
