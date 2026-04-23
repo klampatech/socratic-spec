@@ -166,11 +166,12 @@ export class Orchestrator {
 
       // AC-003: Handle non-zero exit code
       if (exitCode !== 0) {
-        console.error(`pi process exited with code ${exitCode} during round ${round}`);
+        const errorMessage = `pi process exited with code ${exitCode} during round ${round}: ${stderr || stdout}`;
+        console.error(errorMessage);
         return {
           round,
           question,
-          error: `pi process exited with code ${exitCode}: ${stderr || stdout}`,
+          error: errorMessage,
         };
       }
 
@@ -208,7 +209,7 @@ export class Orchestrator {
    * Handle pi process exit with non-zero code
    * AC-003: Graceful error handling on unexpected exit
    */
-  private handleProcessExit(exitCode: number, round: number): void {
+  public handleProcessExit(exitCode: number, round: number): void {
     console.error(`pi process exited with code ${exitCode} during round ${round}`);
   }
 
