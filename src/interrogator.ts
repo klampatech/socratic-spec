@@ -170,6 +170,9 @@ export class Interrogator {
   
   /**
    * Find missing categories based on spec draft entries
+   * 
+   * Returns categories that are NOT covered by the spec draft entries.
+   * If spec draft has entries that cover all required categories, returns empty array.
    */
   private findMissingCategories(draft: SpecDraft): string[] {
     // If no required categories, nothing is missing
@@ -177,37 +180,34 @@ export class Interrogator {
       return [];
     }
     
-    // If no entries and no categories, nothing is missing
-    if (draft.entries.length === 0) {
-      return [...this.requiredCategories];
-    }
-    
     const coveredCategories = new Set<string>();
     
     // Analyze entries to determine which categories are covered
-    for (const entry of draft.entries) {
-      const text = `${entry.given} ${entry.when} ${entry.then} ${entry.sourceAnswer}`.toLowerCase();
-      
-      // Check each category's keywords
-      for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
-        for (const keyword of keywords) {
-          if (text.includes(keyword)) {
-            coveredCategories.add(category);
-            break;
+    if (draft.entries.length > 0) {
+      for (const entry of draft.entries) {
+        const text = `${entry.given} ${entry.when} ${entry.then} ${entry.sourceAnswer}`.toLowerCase();
+        
+        // Check each category's keywords
+        for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+          for (const keyword of keywords) {
+            if (text.includes(keyword)) {
+              coveredCategories.add(category);
+              break;
+            }
+          }
+        }
+        
+        // Also check if the category names themselves are covered
+        for (const cat of this.requiredCategories) {
+          const catLower = cat.toLowerCase();
+          if (text.includes(catLower)) {
+            coveredCategories.add(cat);
           }
         }
       }
-    }
-    
-    // Also check if the category names themselves are covered
-    for (const cat of this.requiredCategories) {
-      const catLower = cat.toLowerCase();
-      for (const entry of draft.entries) {
-        const text = `${entry.given} ${entry.when} ${entry.then} ${entry.sourceAnswer}`.toLowerCase();
-        if (text.includes(catLower)) {
-          coveredCategories.add(cat);
-        }
-      }
+    } else {
+      // No entries - no categories are covered
+      // This will result in FOLLOW_UP being returned, asking for exploration
     }
     
     // Return categories not covered
