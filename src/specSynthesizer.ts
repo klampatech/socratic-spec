@@ -1,4 +1,4 @@
-import { SpecDraft, GivenWhenThen, RoundResult, ContradictionResult } from './types';
+import { SpecDraft, GivenWhenThen, RoundResult, ContradictionResult, RephrasingResult } from './types';
 import { log, error, warn } from './logger';
 
 /**
