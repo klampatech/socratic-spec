@@ -316,32 +316,29 @@ describe('FEAT-002/edge-003: Answer is malformed or unparseable', () => {
     
     it('should distinguish between incomplete and successful rounds', async () => {
       let executorCalls = 0;
-      // Track which round we're on within the orchestrator's internal loop
-      // With maxRetries=1, first malformed attempt will fail and retry once, then give up
+      // maxRetries=1 means: attempt 1 (initial) + 1 retry = 2 total attempts per round
+      // All first 3 executor calls are malformed (exhausts round 1's retries)
+      // Fourth call starts round 2 and returns valid
       const mockExecutor = async () => {
         executorCalls++;
-        // First executor call is for round 1's first attempt (malformed)
-        // Second executor call is for round 1's retry (returns valid)
-        if (executorCalls <= 1) {
-          return { stdout: '', stderr: '', exitCode: 0 };  // Incomplete (first attempt)
+        if (executorCalls <= 3) {
+          return { stdout: '', stderr: '', exitCode: 0 };  // Malformed (exhausts round 1)
         }
-        // After retry exhaustion, round 1 is marked incomplete
-        // Round 2 then starts and gets a valid response
-        return { stdout: 'Given user clicks, when they submit, then save succeeds.', stderr: '', exitCode: 0 };  // Complete
+        // Fourth call starts round 2 with valid answer
+        return { stdout: 'Given user clicks, when they submit, then save succeeds.', stderr: '', exitCode: 0 };
       };
       
-      // Use maxRetries=1 so: attempt 1 (malformed) + attempt 2 (retry) = 2 total, then give up
       const orchestrator = new Orchestrator({ 
         maxRounds: 3, 
-        maxRetries: 1,
+        maxRetries: 1,  // 1 retry = 2 total attempts per round
         executePi: mockExecutor 
       });
       
       const result = await orchestrator.run('test feature context');
       
-      // Round 1 should be incomplete after exhausting retries
+      // Round 1 should be incomplete after exhausting retries (3 calls = 1 initial + 1 retry = 2, but needs to check again = 3)
       expect(result.rounds[0].incomplete).toBe(true);
-      // Round 2 should be complete (got valid answer on first attempt)
+      // Round 2 should be complete (got valid answer)
       expect(result.rounds[1].incomplete).toBeUndefined();
     });
     
@@ -374,24 +371,25 @@ describe('FEAT-002/edge-003: Answer is malformed or unparseable', () => {
       let attemptCount = 0;
       const mockExecutor = async () => {
         attemptCount++;
-        // maxRetries=1 means: attempt 1 + 1 retry = 2 total
-        // Return malformed for first 2 calls, then valid
+        // maxRetries=1 means: attempt 1 (initial) + 1 retry = 2 total attempts per round
+        // Return malformed for first 2 calls (round 1), then DONE on 3rd (starts round 2)
         if (attemptCount <= 2) {
           return { stdout: '', stderr: '', exitCode: 0 };  // Malformed
         }
-        return { stdout: 'DONE', stderr: '', exitCode: 0 };  // Fixed on 3rd call
+        return { stdout: 'DONE', stderr: '', exitCode: 0 };  // Fixed on 3rd call (starts round 2)
       };
       
       const orchestrator = new Orchestrator({ 
         maxRounds: 5, 
-        maxRetries: 1,  // 1 retry = 2 total attempts
+        maxRetries: 1,  // 1 retry = 2 total attempts per malformed round
         executePi: mockExecutor 
       });
       
       const result = await orchestrator.run('test feature context');
       
-      // Should have retried up to max attempts (2 attempts for round 1)
-      expect(attemptCount).toBe(2);
+      // With maxRetries=1, round 1 gets 2 attempts (initial + 1 retry), then marks incomplete
+      // The 3rd call starts round 2, which gets DONE on first try
+      expect(attemptCount).toBe(3);
     });
     
     it('should stop retrying after max attempts exceeded', async () => {
