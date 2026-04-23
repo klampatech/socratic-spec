@@ -25,3 +25,10 @@ export interface AnswerProcessingResult {
   draft: SpecDraft;
   roundResult: RoundResult;
 }
+
+export interface ContradictionResult {
+  hasContradiction: boolean;
+  conflictingEntry?: GivenWhenThen;
+  conflictType?: 'given' | 'when' | 'then';
+  reason?: string;
+}
