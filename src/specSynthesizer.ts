@@ -553,3 +553,223 @@ export function hasContradiction(draft: SpecDraft, newAnswer: string): boolean {
   
   return result.hasContradiction;
 }
+
+/**
+ * FEAT-002/edge-002: Detects rephrasing - when a new answer contains no new information.
+ * 
+ * Compares the new answer against all previous Given/When/Then entries to detect
+ * when the answer is semantically equivalent but rephrased.
+ */
+export function detectRephrasing(draft: SpecDraft, newAnswer: string): RephrasingResult {
+  const parsed = parseGivenWhenThen(newAnswer);
+  const newGiven = parsed.given.toLowerCase();
+  const newWhen = parsed.when.toLowerCase();
+  const newThen = parsed.then.toLowerCase();
+  
+  // No previous entries to compare
+  if (draft.entries.length === 0) {
+    return { isRephrasing: false };
+  }
+  
+  // Check against all previous entries
+  for (const entry of draft.entries) {
+    const existingGiven = entry.given.toLowerCase();
+    const existingWhen = entry.when.toLowerCase();
+    const existingThen = entry.then.toLowerCase();
+    
+    // Calculate semantic similarity using multiple approaches
+    const overallSimilarity = calculateRephrasingSimilarity(
+      newGiven, newWhen, newThen,
+      existingGiven, existingWhen, existingThen
+    );
+    
+    // If the overall semantic content is substantially the same, it's rephrasing
+    // Use a threshold of 0.5 for rephrasing detection
+    if (overallSimilarity >= 0.5) {
+      return {
+        isRephrasing: true,
+        similarityScore: overallSimilarity,
+        conflictingEntry: entry,
+        reason: `Answer is semantically equivalent to existing entry (similarity: ${overallSimilarity.toFixed(2)})`
+      };
+    }
+  }
+  
+  return { isRephrasing: false };
+}
+
+/**
+ * Calculates semantic similarity between two Given/When/Then triples.
+ * Uses word overlap and considers structural correspondence.
+ */
+function calculateSemanticSimilarity(
+  given1: string, when1: string, then1: string,
+  given2: string, when2: string, then2: string
+): number {
+  // Convert to arrays of key words for comparison
+  const words1 = extractKeyWords(`${given1} ${when1} ${then1}`);
+  const words2 = extractKeyWords(`${given2} ${when2} ${then2}`);
+  
+  if (words1.length === 0 && words2.length === 0) return 1;
+  if (words1.length === 0 || words2.length === 0) return 0;
+  
+  // Calculate Jaccard similarity on key words
+  const set1 = new Set(words1);
+  const set2 = new Set(words2);
+  const intersection = new Set([...set1].filter(x => set2.has(x)));
+  const union = new Set([...set1, ...set2]);
+  
+  const wordOverlap = intersection.size / union.size;
+  
+  // Also check for structural similarity (same GWT pattern)
+  const structuralSim = calculateStructuralSimilarity(given1, when1, then1, given2, when2, then2);
+  
+  // Combine word overlap with structural similarity
+  return wordOverlap * 0.6 + structuralSim * 0.4;
+}
+
+/**
+ * Calculates similarity specifically for rephrasing detection.
+ * Uses multiple approaches for semantic equivalence detection.
+ */
+function calculateRephrasingSimilarity(
+  given1: string, when1: string, then1: string,
+  given2: string, when2: string, then2: string
+): number {
+  // Normalize empty values to empty string for comparison
+  const g1 = given1 === '(none)' ? '' : given1;
+  const g2 = given2 === '(none)' ? '' : given2;
+  
+  // Calculate similarities for each clause
+  const givenSim = calculateJaccardSimilarity(g1, g2);
+  const whenSim = calculateJaccardSimilarity(when1, when2);
+  const thenSim = calculateJaccardSimilarity(then1, then2);
+  
+  // Handle empty GIVEN cases - when both have no GIVEN, don't penalize
+  let givenWeight = 0.2;
+  let whenWeight = 0.4;
+  let thenWeight = 0.4;
+  let effectiveGivenSim = givenSim;
+  
+  if (!g1 && !g2) {
+    // Both empty - ignore given similarity and redistribute weight
+    whenWeight = 0.5;
+    thenWeight = 0.5;
+    effectiveGivenSim = 1.0; // Treat as match
+  } else if (!g1 || !g2) {
+    // One has given, one doesn't - reduce weight
+    givenWeight = 0.1;
+    whenWeight = 0.45;
+    thenWeight = 0.45;
+  }
+  
+  // Calculate weighted average
+  const jaccardResult = effectiveGivenSim * givenWeight + whenSim * whenWeight + thenSim * thenWeight;
+  
+  // Also calculate character n-gram similarity as a fallback for semantic equivalence
+  // This helps catch rephrases that use different words but same concepts
+  const whenNgramSim = calculateNgramSimilarity(when1, when2);
+  const thenNgramSim = calculateNgramSimilarity(then1, then2);
+  const overallNgramSim = (whenNgramSim + thenNgramSim) / 2;
+  
+  // Combine both approaches - take the higher of the two
+  return Math.max(jaccardResult, overallNgramSim * 0.7);
+}
+
+/**
+ * Calculates character n-gram similarity (2-grams).
+ * Useful for detecting rephrases that use different words but similar structure.
+ */
+function calculateNgramSimilarity(text1: string, text2: string): number {
+  if (!text1 && !text2) return 1;
+  if (!text1 || !text2) return 0;
+  
+  // Normalize and create 2-grams
+  const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, '').trim();
+  const n1 = normalize(text1);
+  const n2 = normalize(text2);
+  
+  const getNgrams = (s: string, n: number): Set<string> => {
+    const grams = new Set<string>();
+    for (let i = 0; i <= s.length - n; i++) {
+      grams.add(s.substring(i, i + n));
+    }
+    return grams;
+  };
+  
+  const grams1 = getNgrams(n1, 2);
+  const grams2 = getNgrams(n2, 2);
+  
+  if (grams1.size === 0 && grams2.size === 0) return 1;
+  if (grams1.size === 0 || grams2.size === 0) return 0;
+  
+  const intersection = new Set([...grams1].filter(x => grams2.has(x)));
+  const union = new Set([...grams1, ...grams2]);
+  
+  return intersection.size / union.size;
+}
+
+/**
+ * Calculates Jaccard similarity between two texts.
+ */
+function calculateJaccardSimilarity(text1: string, text2: string): number {
+  if (!text1 && !text2) return 1;
+  if (!text1 || !text2) return 0;
+  
+  // Tokenize on whitespace and common punctuation
+  const words1 = new Set(text1.split(/[\s,.!?;:'"()\[\]{}]+/).filter(w => w.length > 0));
+  const words2 = new Set(text2.split(/[\s,.!?;:'"()\[\]{}]+/).filter(w => w.length > 0));
+  
+  if (words1.size === 0 && words2.size === 0) return 1;
+  if (words1.size === 0 || words2.size === 0) return 0;
+  
+  const intersection = new Set([...words1].filter(x => words2.has(x)));
+  const union = new Set([...words1, ...words2]);
+  
+  return intersection.size / union.size;
+}
+
+/**
+ * Calculates structural similarity between two Given/When/Then triples.
+ * Checks if the overall structure (empty/present for each clause) matches.
+ */
+function calculateStructuralSimilarity(
+  given1: string, when1: string, then1: string,
+  given2: string, when2: string, then2: string
+): number {
+  // Check if both have empty or non-empty GIVEN
+  const givenMatch = (!given1 && !given2) || (given1 && given2);
+  const whenMatch = (!when1 && !when2) || (when1 && when2);
+  const thenMatch = (!then1 && !then2) || (then1 && then2);
+  
+  // If structure is identical, give full score
+  if (givenMatch && whenMatch && thenMatch) return 1;
+  
+  // If two clauses match
+  if ([givenMatch, whenMatch, thenMatch].filter(Boolean).length >= 2) return 0.7;
+  
+  // If one clause matches
+  return 0.3;
+}
+
+/**
+ * Simple wrapper that returns true if an answer is a rephrasing.
+ * Logs the rephrasing if detected.
+ */
+export function isRephrasing(draft: SpecDraft, newAnswer: string): boolean {
+  const result = detectRephrasing(draft, newAnswer);
+  
+  if (result.isRephrasing) {
+    warn(`Rephrasing detected in ${draft.featureId}: no new information provided`, {
+      similarityScore: result.similarityScore,
+      existingEntry: result.conflictingEntry,
+      reason: result.reason
+    });
+    log(`Rephrasing detected: similar content exists in spec draft`, {
+      existingWhen: result.conflictingEntry?.when,
+      newWhen: parseGivenWhenThen(newAnswer).when
+    });
+  }
+  
+  return result.isRephrasing;
+}

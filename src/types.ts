@@ -32,3 +32,10 @@ export interface ContradictionResult {
   conflictType?: 'given' | 'when' | 'then';
   reason?: string;
 }
+
+export interface RephrasingResult {
+  isRephrasing: boolean;
+  similarityScore?: number;
+  conflictingEntry?: GivenWhenThen;
+  reason?: string;
+}
