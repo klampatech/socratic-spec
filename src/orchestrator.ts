@@ -1,9 +1,12 @@
 import { spawn, ChildProcess } from 'child_process';
+import { Interrogator, createInterrogator, DONE_SIGNAL } from './interrogator';
+import { createSpecDraft } from './specSynthesizer';
 
 export interface OrchestratorConfig {
   maxRounds: number;
   maxRetries?: number;
   piArgs?: string[];
+  requiredCategories?: string[];
   // For testing: provide a custom pi execution function
   executePi?: (args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
@@ -13,6 +16,7 @@ export interface RoundResult {
   question?: string;
   answer?: string;
   error?: string;
+  isDone?: boolean;
 }
 
 export interface OrchestrationResult {
@@ -75,12 +79,21 @@ export class Orchestrator {
   private executePi: (args: string[]) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   private currentRole: AgentRole = AgentRole.Interrogator;
   private roundCount: number = 0;
+  private interrogator: Interrogator;
+  private specDraft: any;
 
   constructor(config: OrchestratorConfig) {
     this.maxRounds = config.maxRounds;
     this.maxRetries = config.maxRetries ?? 3;
     this.piArgs = config.piArgs ?? ['chat'];
     this.executePi = config.executePi ?? defaultPiExecutor;
+    // Create interrogator with required categories (defaults to empty for trivial specs)
+    this.interrogator = createInterrogator({
+      requiredCategories: config.requiredCategories ?? [],
+      maxCycles: config.maxRounds,
+      similarityThreshold: 0.7
+    });
+    this.specDraft = createSpecDraft('default');
   }
 
   /**
@@ -91,10 +104,12 @@ export class Orchestrator {
    */
   async run(featureContext: string): Promise<OrchestrationResult> {
     const rounds: RoundResult[] = [];
-    let specDraft = '';
+    let specDraftText = '';
     let completed = false;
     let error: string | undefined;
 
+    // Try to execute at least one round even for trivial specs
+    // The DONE signal will be checked from the pi response
     try {
       for (let round = 1; round <= this.maxRounds; round++) {
         this.roundCount = round;
@@ -110,7 +125,7 @@ export class Orchestrator {
 
         // Accumulate spec draft after each answer
         if (roundResult.answer) {
-          specDraft += roundResult.answer + '\n';
+          specDraftText += roundResult.answer + '\n';
         }
 
         // AC-002: Alternate roles for next round
@@ -118,15 +133,8 @@ export class Orchestrator {
           ? AgentRole.Respondee 
           : AgentRole.Interrogator;
 
-        // AC-001/AC-002: Check if Interrogator signaled DONE (case-insensitive)
-        // DONE signal appears in the question from Interrogator
-        if (roundResult.question?.toUpperCase().includes('DONE')) {
-          completed = true;
-          break;
-        }
-
-        // Also check answer for DONE signal (in case Respondee reports Interrogator's decision)
-        if (roundResult.answer?.toUpperCase().includes('DONE')) {
+        // Check for DONE signal from round execution
+        if (roundResult.isDone) {
           completed = true;
           break;
         }
@@ -141,7 +149,7 @@ export class Orchestrator {
       console.error(`Orchestration failed: ${error}`);
     }
 
-    return { rounds, specDraft, completed, error };
+    return { rounds, specDraft: specDraftText, completed, error };
   }
 
   private async executeRound(round: number, featureContext: string): Promise<RoundResult> {
@@ -168,13 +176,22 @@ export class Orchestrator {
 
       const responseText = stdout.trim();
       
-      // Check for DONE signal in output
-      const isDone = responseText.toUpperCase().includes('DONE');
+      // Check for DONE signal - the Interrogator signals DONE when coverage is complete
+      // DONE signal should be checked in the response, not in the constructed question
+      // We filter out DONE prefix for storage but track the signal
+      const isDone = responseText.toUpperCase().startsWith('DONE') || 
+                     responseText.toUpperCase() === 'DONE';
+      
+      // Extract clean answer (remove DONE prefix for storage if present)
+      const cleanAnswer = isDone 
+        ? responseText.replace(/^DONE\s*:?\s*/i, '')
+        : responseText;
       
       return {
         round,
-        question: isDone ? `DONE: ${responseText}` : question,
-        answer: responseText,
+        question,  // Always the original question text
+        answer: cleanAnswer,
+        isDone,  // Include DONE signal indicator for main loop
       };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
@@ -200,6 +217,13 @@ export class Orchestrator {
    */
   getCurrentRole(): AgentRole {
     return this.currentRole;
+  }
+
+  /**
+   * Get the Interrogator instance (for testing)
+   */
+  getInterrogator(): Interrogator {
+    return this.interrogator;
   }
 
   /**
