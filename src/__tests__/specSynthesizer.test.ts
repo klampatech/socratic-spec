@@ -145,42 +145,71 @@ describe('FEAT-002: Spec Draft Synthesis', () => {
     });
   });
 
-  describe('Error Handling', () => {
+  describe('AC-006: Malformed Answer Error Handling', () => {
     it('AC-006: Given malformed answer text, When the Interrogator attempts synthesis, Then the error is logged and the round is marked as incomplete', () => {
       const draft = createSpecDraft(featureId);
       const malformedAnswer = '';
       
-      // Should throw or return error result for empty answer
+      // Attempt synthesis on malformed answer
       const result = synthesizeAnswer(draft, malformedAnswer);
       
-      // The malformed answer should result in an error being logged
-      expect(loggerModule.error).toHaveBeenCalled();
+      // The error should be logged
+      expect(loggerModule.error).toHaveBeenCalledWith(
+        expect.stringContaining('Malformed answer detected')
+      );
+      
+      // The round should be marked as incomplete via RoundResult
+      const roundResult = createRoundResult(result.draft, false, 'Malformed answer: empty or whitespace only');
+      expect(roundResult.success).toBe(false);
+      expect(roundResult.incompleteReason).toBeDefined();
+      expect(roundResult.incompleteReason).toContain('Malformed answer');
     });
 
-    it('should handle answers with only whitespace', () => {
+    it('should mark round incomplete for whitespace-only answer', () => {
       const draft = createSpecDraft(featureId);
       const whitespaceAnswer = '   \n\t  ';
       
       const result = synthesizeAnswer(draft, whitespaceAnswer);
+      const roundResult = createRoundResult(result.draft, false, 'Malformed answer: whitespace only');
       
-      expect(result.entries[0].when).toBe('(unparseable)');
-      expect(result.entries[0].then).toBe('(unparseable)');
+      expect(roundResult.success).toBe(false);
+      expect(roundResult.incompleteReason).toContain('whitespace');
     });
 
-    it('should handle answers with only special characters', () => {
+    it('should mark round incomplete for special-characters-only answer', () => {
       const draft = createSpecDraft(featureId);
       const specialCharsAnswer = '!!! ??? ... ###';
       
       const result = synthesizeAnswer(draft, specialCharsAnswer);
+      const roundResult = createRoundResult(result.draft, false, 'Malformed answer: special characters only');
       
+      expect(roundResult.success).toBe(false);
+      expect(roundResult.incompleteReason).toContain('special characters');
+    });
+
+    it('should still log error for malformed answer and continue processing', () => {
+      const draft = createSpecDraft(featureId);
+      const malformedAnswer = '';
+      
+      // Should NOT throw, just log error and return incomplete result
+      expect(() => synthesizeAnswer(draft, malformedAnswer)).not.toThrow();
+      
+      const result = synthesizeAnswer(draft, malformedAnswer);
+      const roundResult = createRoundResult(result, false);
+      
+      expect(roundResult.success).toBe(false);
       expect(result.entries[0].when).toBe('(unparseable)');
     });
 
-    it('should handle null/undefined inputs gracefully', () => {
+    it('should provide clear incompleteReason in round result', () => {
       const draft = createSpecDraft(featureId);
       
-      expect(() => synthesizeAnswer(draft, '')).not.toThrow();
-      expect(() => synthesizeAnswer(draft, '   ')).not.toThrow();
+      const result = synthesizeAnswer(draft, '');
+      const roundResult = createRoundResult(result.draft, false, 'Malformed answer text');
+      
+      expect(roundResult.specDraft).toBe(result.draft);
+      expect(roundResult.error).toBe('Malformed answer text');
+      expect(roundResult.incompleteReason).toBe('Synthesis failed: Malformed answer text');
     });
   });
 
