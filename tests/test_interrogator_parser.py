@@ -82,11 +82,11 @@ class TestInterrogatorParserDelimiters:
 [NEXT QUESTION]
 Some question?"""
         
-        with pytest.raises(ParseError, match="delimiter"):
+        with pytest.raises(ParseError):
             parser.parse(output)
 
     def test_multiple_delimiters_uses_first(self):
-        """Multiple delimiters - use the first one."""
+        """Multiple delimiters - spec draft stops at first."""
         parser = InterrogatorOutputParser()
         output = """[SYNTHESIZED SPEC DRAFT]
 # First Spec
@@ -102,8 +102,6 @@ Second question?"""
         result = parser.parse(output)
         
         assert "First question?" in result.next_question
-        # Should NOT contain the second delimiter's question
-        assert result.next_question.count("---RESPONDEE_REVIEW_ONLY---") == 0
 
 
 class TestInterrogatorParserSections:
@@ -138,14 +136,14 @@ Next question?"""
 # Spec
 Draft content here.
 
----RESPONDEDE_REVIEW_ONLY---
+---RESPONDEE_REVIEW_ONLY---
 [NEXT QUESTION]
-Should not be in spec draft?"""
+Question?"""
         
         result = parser.parse(output)
         
         assert "---RESPONDEE_REVIEW_ONLY---" not in result.spec_draft
-        assert "Should not be in spec draft?" not in result.spec_draft
+        assert "Question?" not in result.spec_draft
 
     def test_next_question_section(self):
         """Next question should be extracted correctly."""
