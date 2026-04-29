@@ -26,11 +26,11 @@ pip install -e ".[dev]"
 ## Quick Start
 
 ```bash
-# Create a context file with your project description
-echo "A web server that serves static files" > context.md
+# Option 1: Plain text context (easiest!)
+socratic-spec --context "Build a web server" --project-name "WebServer"
 
-# Run the spec refiner
-socratic-spec --context context.md --project-name "StaticFileServer"
+# Option 2: File-based context
+socratic-spec --context ./path/to/spec.md --project-name "MyProject"
 ```
 
 ## Usage
@@ -39,7 +39,7 @@ socratic-spec --context context.md --project-name "StaticFileServer"
 socratic-spec [OPTIONS]
 
 Options:
-  -c, --context PATH              Path to context file with project description  [required]
+  -c, --context TEXT             Path to context file OR plain text description  [required]
   -p, --project-name TEXT         Name for the project (default: project)
   -r, --max-rounds INTEGER        Maximum number of Q&A rounds (default: 50)
   -o, --output PATH               Output directory for sessions (default: sessions/)

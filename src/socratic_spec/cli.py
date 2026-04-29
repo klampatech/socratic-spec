@@ -23,9 +23,9 @@ from socratic_spec.exceptions import SocraticSpecError
 @click.option(
     "--context",
     "-c",
-    type=click.Path(exists=True, path_type=Path),
+    type=str,
     required=True,
-    help="Path to context file with project description",
+    help="Path to context file OR plain text description of the project",
 )
 @click.option(
     "--project-name",
@@ -98,7 +98,7 @@ from socratic_spec.exceptions import SocraticSpecError
 )
 @click.version_option(version=__version__)
 def cli(
-    context: Path,
+    context: str,
     project_name: str,
     max_rounds: int,
     output: Path,
@@ -116,10 +116,23 @@ def cli(
     Iteratively refine specifications through Socratic questioning.
     One agent asks probing questions; the other answers. The result
     is a comprehensive specification document.
+    
+    Context can be:
+    - A file path: --context ./path/to/context.md
+    - Plain text: --context "Build a meal planning app"
     """
+    # Determine if context is a file path or plain text
+    context_path = Path(context)
+    if context_path.exists() and context_path.is_file():
+        # It's a file path
+        context_value: str | Path = context_path
+    else:
+        # It's plain text - store as-is, will be handled in orchestrator
+        context_value = context
+    
     # Build config from CLI args
     cli_args: dict[str, Any] = {
-        "context": context,
+        "context": context_value,
         "project_name": project_name,
         "max_rounds": max_rounds,
         "output_dir": output,

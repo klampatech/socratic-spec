@@ -82,13 +82,15 @@ class Orchestrator:
         if not is_available:
             raise SocraticSpecError(f"pi CLI not available: {error_msg}")
         
-        # Check context file
+        # Check context - can be file path or plain text
         if not self.config.context:
             raise SocraticSpecError("--context is required")
         
+        # If context is a path, validate it exists
         context_path = Path(self.config.context)
         if not context_path.exists():
-            raise SocraticSpecError(f"Context file not found: {context_path}")
+            # Not a valid file path - assume it's plain text
+            logger.debug(f"Context is plain text, not a file path")
 
     def _initialize_session(self) -> Session:
         """Initialize or resume session.
@@ -109,9 +111,16 @@ class Orchestrator:
         else:
             # Create new session
             logger.info(f"Creating new session for: {self.config.project_name}")
+            
+            # Determine context file (only if it's a path to an actual file)
+            context_file = None
+            context_value = self.config.context
+            if isinstance(context_value, Path) and context_value.exists():
+                context_file = context_value
+            
             session = session_manager.create_session(
                 project_name=self.config.project_name,
-                context_file=self.config.context,
+                context_file=context_file,
             )
             session.start()
         
@@ -163,8 +172,14 @@ class Orchestrator:
             # Initialize agents
             self._initialize_agents()
             
-            # Load feature context
-            feature_context = Path(self.config.context).read_text()
+            # Load feature context (file path or plain text)
+            context_value = self.config.context
+            if isinstance(context_value, Path) and context_value.exists():
+                feature_context = context_value.read_text()
+                logger.info(f"Loaded context from file: {context_value}")
+            else:
+                feature_context = str(context_value)
+                logger.info(f"Using context as plain text")
             
             # Run main loop
             return self._run_loop(feature_context)
